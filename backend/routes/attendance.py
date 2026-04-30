@@ -5,14 +5,16 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 from database import get_db
 from models import Attendance
-from face_service import get_embedding, save_base64_image, is_live_face
+from face_service import get_embedding_from_array, b64_to_array, is_live_face
 from typing import Optional
+from datetime import datetime
+import ws_manager
 import os
 
 router = APIRouter(prefix="/api/attendance", tags=["attendance"])
 
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.40"))
-MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.55"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.50"))
+MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.70"))
 
 
 class DetectRequest(BaseModel):
@@ -23,23 +25,27 @@ class DetectRequest(BaseModel):
 @router.post("/detect")
 def detect_face(request: DetectRequest, db: Session = Depends(get_db)):
     # Validate event if provided
+    event_name = None
     if request.event_id is not None:
         event = db.execute(
-            text("SELECT id FROM events WHERE id = :eid"),
+            text("SELECT id, name FROM events WHERE id = :eid"),
             {"eid": request.event_id},
         ).fetchone()
         if not event:
             return {"status": "invalid_event"}
+        event_name = event.name
 
-    temp_path = save_base64_image(request.image)
+    # Decode base64 directly to numpy array — no disk write
+    img_array = b64_to_array(request.image)
+    if img_array is None:
+        return {"status": "no_face"}
 
     try:
-        # Liveness check (no-op when LIVENESS_CHECK=false)
-        if not is_live_face(temp_path):
+        if not is_live_face(img_array):
             return {"status": "spoof_detected"}
 
-        # enforce=False so a slightly off-angle webcam frame still gets an embedding
-        embedding = get_embedding(temp_path, enforce=False)
+        # Image is already a cropped face from the frontend, so skip detector
+        embedding = get_embedding_from_array(img_array)
         if embedding is None:
             print("[detect] DeepFace could not extract embedding")
             return {"status": "no_face"}
@@ -51,7 +57,7 @@ def detect_face(request: DetectRequest, db: Session = Depends(get_db)):
 
         row = db.execute(
             text(f"""
-                SELECT id, name, image_url,
+                SELECT id, name, email, phone, linkedin, occupation, image_url,
                        embedding <=> '{embedding_str}'::vector AS distance
                 FROM users
                 ORDER BY embedding <=> '{embedding_str}'::vector
@@ -70,26 +76,68 @@ def detect_face(request: DetectRequest, db: Session = Depends(get_db)):
         if row.distance > CONFIDENCE_THRESHOLD:
             return {"status": "low_confidence", "distance": round(row.distance, 4)}
 
-        # Duplicate check: per event if event_id given, otherwise per calendar day
+        # Event-specific enrollment check
+        already_attended = False
         if request.event_id is not None:
-            already_attended = db.execute(
-                text("SELECT id FROM attendance WHERE user_id = :uid AND event_id = :eid"),
+            record = db.execute(
+                text("SELECT id, status FROM attendance WHERE user_id = :uid AND event_id = :eid"),
                 {"uid": row.id, "eid": request.event_id},
             ).fetchone()
+
+            if record is None:
+                # Face recognised but not enrolled for this event
+                ws_manager.broadcast({
+                    "type": "not_enrolled",
+                    "user": {"name": row.name, "image_url": row.image_url},
+                    "event_name": event_name,
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                return {
+                    "status": "not_registered_for_event",
+                    "user": {"name": row.name},
+                    "distance": round(row.distance, 4),
+                }
+
+            if record.status == "present":
+                already_attended = True
+            else:
+                # status = "enrolled" → first face scan, mark as present
+                db.execute(
+                    text("UPDATE attendance SET status='present', timestamp=NOW() WHERE id=:aid"),
+                    {"aid": record.id},
+                )
+                db.commit()
         else:
-            already_attended = db.execute(
+            # No event selected — fall back to per-day duplicate check
+            existing = db.execute(
                 text("SELECT id FROM attendance WHERE user_id = :uid AND event_id IS NULL AND DATE(timestamp) = CURRENT_DATE"),
                 {"uid": row.id},
             ).fetchone()
 
-        if not already_attended:
-            try:
-                db.add(Attendance(user_id=row.id, event_id=request.event_id, status="present"))
-                db.commit()
-            except IntegrityError:
-                # Race condition: another request inserted first — treat as already attended
-                db.rollback()
+            if existing:
                 already_attended = True
+            else:
+                try:
+                    db.add(Attendance(user_id=row.id, event_id=None, status="present"))
+                    db.commit()
+                except IntegrityError:
+                    db.rollback()
+                    already_attended = True
+
+        ws_manager.broadcast({
+            "type": "match",
+            "user": {
+                "name": row.name,
+                "email": row.email,
+                "phone": row.phone,
+                "linkedin": row.linkedin,
+                "occupation": row.occupation,
+                "image_url": row.image_url,
+                "already_attended": already_attended,
+            },
+            "event_name": event_name,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
 
         return {
             "status": "matched",
@@ -97,13 +145,13 @@ def detect_face(request: DetectRequest, db: Session = Depends(get_db)):
                 "id": row.id,
                 "name": row.name,
                 "image_url": row.image_url,
-                "already_attended": already_attended is not None,
+                "already_attended": already_attended,
             },
             "distance": round(row.distance, 4),
         }
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+    except Exception as e:
+        print(f"[detect] unexpected error: {e}")
+        return {"status": "error"}
 
 
 @router.get("/logs")

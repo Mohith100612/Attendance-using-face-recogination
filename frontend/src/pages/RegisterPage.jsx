@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import Webcam from 'react-webcam'
 
 export default function RegisterPage() {
@@ -12,6 +12,16 @@ export default function RegisterPage() {
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState(null) // null | 'success' | 'error'
   const [statusMsg, setStatusMsg] = useState('')
+
+  const [events, setEvents] = useState([])
+  const [selectedEvent, setSelectedEvent] = useState('')
+
+  useEffect(() => {
+    fetch('/api/events')
+      .then(r => r.json())
+      .then(data => setEvents(data))
+      .catch(() => {})
+  }, [])
 
   // Google Sheet import state
   const [sheetUrl, setSheetUrl] = useState('')
@@ -49,6 +59,7 @@ export default function RegisterPage() {
     e.preventDefault()
     if (!form.name.trim()) return showStatus('error', 'Full name is required.')
     if (!form.email.trim()) return showStatus('error', 'Email is required.')
+    if (!selectedEvent) return showStatus('error', 'Please select an event.')
     if (!uploadFile && !captured) return showStatus('error', 'Please provide a face photo.')
 
     setSubmitting(true)
@@ -56,6 +67,7 @@ export default function RegisterPage() {
 
     const fd = new FormData()
     Object.entries(form).forEach(([k, v]) => fd.append(k, v.trim()))
+    if (selectedEvent) fd.append('event_id', selectedEvent)
     if (uploadFile) fd.append('image', uploadFile)
     else fd.append('image_base64', captured)
 
@@ -65,8 +77,10 @@ export default function RegisterPage() {
       if (!res.ok) {
         showStatus('error', data.detail || 'Registration failed.')
       } else {
-        showStatus('success', `${data.name} has been registered successfully!`)
+        const evtMsg = data.event_name ? ` for "${data.event_name}"` : ''
+        showStatus('success', `${data.name} registered successfully${evtMsg}!`)
         setForm({ name: '', email: '', phone: '', linkedin: '', occupation: '' })
+        setSelectedEvent('')
         setPreview(null)
         setUploadFile(null)
         setCaptured(null)
@@ -108,7 +122,7 @@ export default function RegisterPage() {
 
         <div className="sr-header">
           <h1 className="sr-title">Spotregister</h1>
-          <p className="sr-sub">Fill in the details and capture your face to register for the event.</p>
+          <p className="sr-sub">Fill in the details, select your event, and capture your face. You will be eligible only for the event you register under.</p>
         </div>
 
         <form onSubmit={handleSubmit} className="sr-form">
@@ -146,6 +160,26 @@ export default function RegisterPage() {
             <label>LinkedIn Profile URL</label>
             <input name="linkedin" placeholder="https://linkedin.com/in/yourprofile"
               value={form.linkedin} onChange={handleField} disabled={submitting} />
+          </div>
+
+          {/* Event Name */}
+          <div className="sr-field">
+            <label>Event Name <span className="req">*</span></label>
+            <select
+              value={selectedEvent}
+              onChange={e => setSelectedEvent(e.target.value)}
+              disabled={submitting}
+              className="sr-select"
+            >
+              <option value="">— Select the event you are registering for —</option>
+              {events.map(ev => (
+                <option key={ev.id} value={ev.id}>{ev.name}</option>
+              ))}
+            </select>
+            {events.length === 0
+              ? <span className="sr-hint">No events created yet. Ask the organiser to create an event first.</span>
+              : <span className="sr-hint">You will only be eligible for the event you select here.</span>
+            }
           </div>
 
           {/* Face photo */}

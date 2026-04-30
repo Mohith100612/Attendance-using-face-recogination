@@ -191,10 +191,17 @@ export default function AttendancePage() {
         speak(msg)
         setTimeout(resetToWatching, RESULT_DISPLAY_MS)
 
-      } else if (data.status === 'not_registered') {
-        setResult({ status: 'not_registered', message: "You're not registered. Please register first." })
+      } else if (data.status === 'not_registered_for_event') {
+        const name = data.user?.name || 'You'
+        setResult({ status: 'not_enrolled', name, message: `${name} is not registered for this event. Please go to the Spotregister desk.` })
         setState('not_registered')
-        speak("You are not registered. Please register first.")
+        speak(`${name} is not registered for this event. Please go to the Spotregister desk.`)
+        setTimeout(resetToWatching, RESULT_DISPLAY_MS)
+
+      } else if (data.status === 'not_registered') {
+        setResult({ status: 'not_registered', message: "Face not recognised. Please register at the Spotregister desk." })
+        setState('not_registered')
+        speak("Face not recognised. Please register at the Spotregister desk.")
         setTimeout(resetToWatching, RESULT_DISPLAY_MS)
 
       } else if (data.status === 'low_confidence') {
@@ -255,7 +262,7 @@ export default function AttendancePage() {
           audio={false}
           screenshotFormat="image/jpeg"
           screenshotQuality={0.85}
-          videoConstraints={{ width: 1280, height: 720, facingMode: 'user' }}
+          videoConstraints={{ width: 640, height: 480, facingMode: 'user' }}
           className="webcam"
         />
 
@@ -292,6 +299,13 @@ export default function AttendancePage() {
                   <div className="result-name">{result.user?.name}</div>
                   <div className="result-message">{result.message}</div>
                 </div>
+              </div>
+            )}
+            {result.status === 'not_enrolled' && (
+              <div className="result-card not-registered">
+                <div className="result-icon">!</div>
+                <div className="result-name" style={{ fontSize: '1.2rem', marginBottom: '6px' }}>{result.name}</div>
+                <div className="result-message">{result.message}</div>
               </div>
             )}
             {result.status === 'not_registered' && (

@@ -1,7 +1,10 @@
 from deepface import DeepFace
+import numpy as np
+import cv2
 import base64
 import os
 import uuid
+import threading
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -11,7 +14,29 @@ DETECTOR = "opencv"
 LIVENESS_CHECK = os.getenv("LIVENESS_CHECK", "false").lower() == "true"
 
 
+def _warmup():
+    """Pre-load Facenet model into memory so the first real request is fast."""
+    try:
+        dummy = np.zeros((160, 160, 3), dtype=np.uint8)
+        DeepFace.represent(dummy, model_name=MODEL_NAME, enforce_detection=False, detector_backend="skip")
+        print("[face_service] Model warmed up")
+    except Exception as e:
+        print(f"[face_service] Warmup failed: {e}")
+
+threading.Thread(target=_warmup, daemon=True).start()
+
+
+def b64_to_array(b64_str: str) -> np.ndarray:
+    """Decode a base64 data-URL to a BGR numpy array (no disk I/O)."""
+    if "," in b64_str:
+        b64_str = b64_str.split(",")[1]
+    data = base64.b64decode(b64_str)
+    arr = np.frombuffer(data, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
 def get_embedding(image_path: str, enforce: bool = True) -> list | None:
+    """File-based embedding used during registration (needs accurate face detection)."""
     try:
         result = DeepFace.represent(
             img_path=image_path,
@@ -25,12 +50,31 @@ def get_embedding(image_path: str, enforce: bool = True) -> list | None:
         return None
 
 
-def is_live_face(image_path: str) -> bool:
+def get_embedding_from_array(img_array: np.ndarray) -> list | None:
+    """Embedding from a numpy array frame for attendance scanning.
+
+    Uses the same opencv detector as registration so both embeddings sit in the
+    same vector space — critical for accurate cosine-distance matching.
+    """
+    try:
+        result = DeepFace.represent(
+            img_path=img_array,
+            model_name=MODEL_NAME,
+            enforce_detection=False,
+            detector_backend=DETECTOR,
+        )
+        return result[0]["embedding"]
+    except Exception as e:
+        print(f"[face_service] array embedding failed: {e}")
+        return None
+
+
+def is_live_face(img_array: np.ndarray) -> bool:
     if not LIVENESS_CHECK:
         return True
     try:
         faces = DeepFace.extract_faces(
-            img_path=image_path,
+            img_path=img_array,
             enforce_detection=False,
             anti_spoofing=True,
         )

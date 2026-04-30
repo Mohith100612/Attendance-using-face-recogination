@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
-from models import User, Attendance
+from models import User, Attendance, Event
 from face_service import get_embedding, save_upload_bytes, save_base64_image, UPLOAD_DIR
 import os
 
@@ -15,12 +15,21 @@ async def register_user(
     phone: str = Form(None),
     linkedin: str = Form(None),
     occupation: str = Form(None),
+    event_id: int = Form(None),
     image: UploadFile = File(None),
     image_base64: str = Form(None),
     db: Session = Depends(get_db),
 ):
     if not image and not image_base64:
         raise HTTPException(status_code=400, detail="Provide either image file or base64 image.")
+
+    # Validate event if provided
+    event_name = None
+    if event_id is not None:
+        event = db.query(Event).filter(Event.id == event_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        event_name = event.name
 
     if image:
         file_bytes = await image.read()
@@ -49,7 +58,17 @@ async def register_user(
     db.commit()
     db.refresh(user)
 
-    return {"success": True, "user_id": user.id, "name": user.name}
+    # Enroll the user in the selected event only (face scan will mark them as "present")
+    if event_id is not None:
+        db.add(Attendance(user_id=user.id, event_id=event_id, status="enrolled"))
+        db.commit()
+
+    return {
+        "success": True,
+        "user_id": user.id,
+        "name": user.name,
+        "event_name": event_name,
+    }
 
 
 @router.get("/users")

@@ -1,9 +1,11 @@
-from fastapi import FastAPI
+import asyncio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from database import engine, Base
 from routes import register, attendance, events, import_sheet
+import ws_manager
 import os
 
 Base.metadata.create_all(bind=engine)
@@ -23,6 +25,11 @@ with engine.connect() as conn:
 
 app = FastAPI(title="Face Attendance System")
 
+
+@app.on_event("startup")
+async def startup():
+    ws_manager.set_loop(asyncio.get_running_loop())
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
@@ -41,6 +48,21 @@ app.include_router(events.router)
 app.include_router(import_sheet.router)
 
 
+@app.websocket("/ws/display")
+async def display_ws(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # keep alive
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

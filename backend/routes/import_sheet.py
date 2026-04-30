@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from face_service import UPLOAD_DIR, get_embedding
-from models import Event, User
+from models import Attendance, Event, User
 
 router = APIRouter(prefix="/api/import", tags=["import"])
 
@@ -131,6 +131,13 @@ def import_from_sheet(body: ImportRequest, db: Session = Depends(get_db)):
         )
         db.add(user)
         db.commit()
+        db.refresh(user)
+
+        # Enroll in the event from the sheet (face scan will mark as "present")
+        if event_id is not None:
+            db.add(Attendance(user_id=user.id, event_id=event_id, status="enrolled"))
+            db.commit()
+
         imported += 1
 
     return {
