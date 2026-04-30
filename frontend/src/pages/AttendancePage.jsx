@@ -10,14 +10,14 @@ function getTimeGreeting() {
   if (hour < 17) return 'Good afternoon'
   return 'Good evening'
 }
-const DETECT_EVERY_MS = 250    // 4 fps face detection
+
+const DETECT_EVERY_MS = 250
 const RESULT_DISPLAY_MS = 5000
-const NO_FACE_COOLDOWN_MS = 2000  // pause before retrying when backend says no_face
+const NO_FACE_COOLDOWN_MS = 2000
+const MIN_FACE_RATIO = 0.20
 
 function getFemalVoice() {
   const voices = window.speechSynthesis.getVoices()
-
-  // Priority list — sweet, natural-sounding female English voices
   const preferred = [
     'Microsoft Aria Online (Natural) - English (United States)',
     'Microsoft Jenny Online (Natural) - English (United States)',
@@ -25,13 +25,10 @@ function getFemalVoice() {
     'Microsoft Zira - English (United States)',
     'Google US English',
   ]
-
   for (const name of preferred) {
     const v = voices.find(v => v.name === name)
     if (v) return v
   }
-
-  // Fallback: any English female voice
   return (
     voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female')) ||
     voices.find(v => v.lang.startsWith('en') && /zira|eva|aria|jenny|hazel|susan|karen|samantha|victoria|fiona/i.test(v.name)) ||
@@ -43,14 +40,11 @@ function getFemalVoice() {
 function speak(text) {
   window.speechSynthesis.cancel()
   const u = new SpeechSynthesisUtterance(text)
-
   const voice = getFemalVoice()
   if (voice) u.voice = voice
-
-  u.pitch = 1.2   // slightly higher — sounds warmer and more feminine
-  u.rate = 0.92   // a touch slower — feels more welcoming
+  u.pitch = 1.2
+  u.rate = 0.92
   u.volume = 1.0
-
   window.speechSynthesis.speak(u)
 }
 
@@ -66,6 +60,13 @@ export default function AttendancePage() {
   const [modelsReady, setModelsReady] = useState(false)
   const [modelError, setModelError] = useState(false)
 
+  // Event state
+  const [events, setEvents] = useState([])
+  const [selectedEvent, setSelectedEvent] = useState(null)
+  const [newEventName, setNewEventName] = useState('')
+  const [showNewEventInput, setShowNewEventInput] = useState(false)
+  const [eventLoading, setEventLoading] = useState(false)
+
   function setState(s) {
     stateRef.current = s
     setUiState(s)
@@ -74,12 +75,54 @@ export default function AttendancePage() {
   useEffect(() => {
     faceapi.nets.tinyFaceDetector
       .loadFromUri(MODEL_URL)
-      .then(() => {
-        setModelsReady(true)
-        setUiState('idle')
-      })
+      .then(() => { setModelsReady(true); setUiState('idle') })
       .catch(() => setModelError(true))
   }, [])
+
+  async function fetchEvents() {
+    try {
+      const res = await fetch('/api/events')
+      const data = await res.json()
+      setEvents(data)
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleCreateEvent() {
+    const name = newEventName.trim()
+    if (!name) return
+    setEventLoading(true)
+    try {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      })
+      const event = await res.json()
+      setEvents(prev => [event, ...prev])
+      setSelectedEvent(event)
+      setNewEventName('')
+      setShowNewEventInput(false)
+    } finally {
+      setEventLoading(false)
+    }
+  }
+
+  async function handleDeleteEvent(e, event) {
+    e.stopPropagation()
+    if (!window.confirm(`Delete event "${event.name}"? This cannot be undone.`)) return
+    await fetch(`/api/events/${event.id}`, { method: 'DELETE' })
+    setEvents(prev => prev.filter(ev => ev.id !== event.id))
+    if (selectedEvent?.id === event.id) setSelectedEvent(null)
+  }
+
+  function handleStartScanning() {
+    if (!selectedEvent) return
+    activeRef.current = true
+    setState('watching')
+    startLoop()
+  }
 
   const startLoop = useCallback(() => {
     let lastRun = 0
@@ -97,13 +140,25 @@ export default function AttendancePage() {
               new faceapi.TinyFaceDetectorOptions({ scoreThreshold: 0.7 })
             )
 
-            if (hits.length > 0 && stateRef.current === 'watching') {
-              // Capture the screenshot at the exact moment face is confirmed
-              const imageSrc = webcamRef.current?.getScreenshot()
-              if (imageSrc) {
-                setState('identifying')
-                await recognitionRef.current(imageSrc)
-                return  // loop restarts after recognition
+            if (stateRef.current !== 'watching') return
+
+            if (hits.length > 1) {
+              setResult({ status: 'multi_face', message: 'Multiple faces detected. Please step up one at a time.' })
+              setState('multi_face')
+              setTimeout(resetToWatching, 2500)
+              return
+            }
+
+            if (hits.length === 1) {
+              const frameWidth = video.videoWidth || video.clientWidth
+              const faceWidth = hits[0].box.width
+              if (faceWidth / frameWidth >= MIN_FACE_RATIO) {
+                const imageSrc = webcamRef.current?.getScreenshot()
+                if (imageSrc) {
+                  setState('identifying')
+                  await recognitionRef.current(imageSrc)
+                  return
+                }
               }
             }
           } catch {
@@ -118,13 +173,12 @@ export default function AttendancePage() {
     rafRef.current = requestAnimationFrame(tick)
   }, [])
 
-  // Receives the pre-captured screenshot so both detection + recognition use the same frame
   const handleRecognition = async (imageSrc) => {
     try {
       const res = await fetch('/api/attendance/detect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: imageSrc }),
+        body: JSON.stringify({ image: imageSrc, event_id: selectedEvent?.id ?? null }),
       })
       const data = await res.json()
 
@@ -143,22 +197,31 @@ export default function AttendancePage() {
         speak("You are not registered. Please register first.")
         setTimeout(resetToWatching, RESULT_DISPLAY_MS)
 
+      } else if (data.status === 'low_confidence') {
+        setResult({ status: 'low_confidence', message: "Face unclear. Please look directly at the camera." })
+        setState('low_confidence')
+        speak("Please look directly at the camera.")
+        setTimeout(resetToWatching, 2500)
+
+      } else if (data.status === 'spoof_detected') {
+        setResult({ status: 'spoof_detected', message: "Liveness check failed. Please use your real face." })
+        setState('spoof_detected')
+        speak("Liveness check failed.")
+        setTimeout(resetToWatching, 3000)
+
+      } else if (data.status === 'multi_face') {
+        setResult({ status: 'multi_face', message: 'Multiple faces detected. Please step up one at a time.' })
+        setState('multi_face')
+        setTimeout(resetToWatching, 2500)
+
       } else {
-        // backend couldn't confirm a face (no_face / no_users_registered)
-        // pause before retrying to avoid rapid cycle
         setTimeout(() => {
-          if (activeRef.current) {
-            setState('watching')
-            startLoop()
-          }
+          if (activeRef.current) { setState('watching'); startLoop() }
         }, NO_FACE_COOLDOWN_MS)
       }
     } catch {
       setTimeout(() => {
-        if (activeRef.current) {
-          setState('watching')
-          startLoop()
-        }
+        if (activeRef.current) { setState('watching'); startLoop() }
       }, NO_FACE_COOLDOWN_MS)
     }
   }
@@ -173,9 +236,8 @@ export default function AttendancePage() {
 
   function handleActivate() {
     speak(' ')
-    activeRef.current = true
-    setState('watching')
-    startLoop()
+    fetchEvents()
+    setState('event_select')
   }
 
   useEffect(() => {
@@ -196,6 +258,11 @@ export default function AttendancePage() {
           videoConstraints={{ width: 1280, height: 720, facingMode: 'user' }}
           className="webcam"
         />
+
+        {/* Active event badge */}
+        {selectedEvent && (uiState === 'watching' || uiState === 'identifying') && (
+          <div className="event-badge">{selectedEvent.name}</div>
+        )}
 
         {(uiState === 'watching' || uiState === 'identifying') && (
           <div className={`scan-indicator ${uiState}`}>
@@ -233,9 +300,28 @@ export default function AttendancePage() {
                 <div className="result-message">{result.message}</div>
               </div>
             )}
+            {result.status === 'low_confidence' && (
+              <div className="result-card low-confidence">
+                <div className="result-icon">?</div>
+                <div className="result-message">{result.message}</div>
+              </div>
+            )}
+            {result.status === 'multi_face' && (
+              <div className="result-card multi-face">
+                <div className="result-icon">!</div>
+                <div className="result-message">{result.message}</div>
+              </div>
+            )}
+            {result.status === 'spoof_detected' && (
+              <div className="result-card spoof-detected">
+                <div className="result-icon">✕</div>
+                <div className="result-message">{result.message}</div>
+              </div>
+            )}
           </div>
         )}
 
+        {/* Initial activate overlay */}
         {(uiState === 'idle' || uiState === 'models_loading') && (
           <div className="activate-overlay">
             <div className="activate-card">
@@ -258,6 +344,60 @@ export default function AttendancePage() {
                 disabled={!modelsReady || modelError}
               >
                 {modelsReady ? 'Start Attendance' : 'Please wait...'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Event selector overlay */}
+        {uiState === 'event_select' && (
+          <div className="activate-overlay">
+            <div className="activate-card event-select-card">
+              <h2>Select Event</h2>
+              <p>Choose an existing event or create a new one to begin scanning.</p>
+
+              {events.length > 0 && (
+                <div className="event-list">
+                  {events.map(e => (
+                    <div key={e.id} className={`event-option ${selectedEvent?.id === e.id ? 'selected' : ''}`} onClick={() => setSelectedEvent(e)}>
+                      <span className="event-option-name">{e.name}</span>
+                      <button className="event-delete-btn" onClick={ev => handleDeleteEvent(ev, e)} title="Delete event">✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {!showNewEventInput ? (
+                <button className="btn-secondary" onClick={() => setShowNewEventInput(true)}>
+                  + New Event
+                </button>
+              ) : (
+                <div className="new-event-row">
+                  <input
+                    className="event-input"
+                    placeholder="Event name"
+                    value={newEventName}
+                    onChange={e => setNewEventName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleCreateEvent()}
+                    autoFocus
+                  />
+                  <button
+                    className="btn-activate"
+                    onClick={handleCreateEvent}
+                    disabled={eventLoading || !newEventName.trim()}
+                  >
+                    {eventLoading ? '...' : 'Create'}
+                  </button>
+                </div>
+              )}
+
+              <button
+                className="btn-activate"
+                style={{ marginTop: '16px' }}
+                onClick={handleStartScanning}
+                disabled={!selectedEvent}
+              >
+                {selectedEvent ? `Start — ${selectedEvent.name}` : 'Select an event first'}
               </button>
             </div>
           </div>

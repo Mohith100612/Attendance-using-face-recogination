@@ -8,6 +8,7 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 MODEL_NAME = "Facenet"
 DETECTOR = "opencv"
+LIVENESS_CHECK = os.getenv("LIVENESS_CHECK", "false").lower() == "true"
 
 
 def get_embedding(image_path: str, enforce: bool = True) -> list | None:
@@ -22,6 +23,26 @@ def get_embedding(image_path: str, enforce: bool = True) -> list | None:
     except Exception as e:
         print(f"[face_service] embedding failed (enforce={enforce}): {e}")
         return None
+
+
+def is_live_face(image_path: str) -> bool:
+    if not LIVENESS_CHECK:
+        return True
+    try:
+        faces = DeepFace.extract_faces(
+            img_path=image_path,
+            enforce_detection=False,
+            anti_spoofing=True,
+        )
+        if not faces:
+            return True
+        result = bool(faces[0].get("is_real", True))
+        score = faces[0].get("antispoof_score", None)
+        print(f"[liveness] is_real={result} score={score}")
+        return result
+    except Exception as e:
+        print(f"[liveness] check error (fail open): {e}")
+        return True
 
 
 def save_base64_image(b64_str: str) -> str:

@@ -13,6 +13,11 @@ export default function RegisterPage() {
   const [status, setStatus] = useState(null) // null | 'success' | 'error'
   const [statusMsg, setStatusMsg] = useState('')
 
+  // Google Sheet import state
+  const [sheetUrl, setSheetUrl] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+
   function handleField(e) {
     setForm(f => ({ ...f, [e.target.name]: e.target.value }))
   }
@@ -76,6 +81,25 @@ export default function RegisterPage() {
   function showStatus(type, msg) {
     setStatus(type)
     setStatusMsg(msg)
+  }
+
+  async function handleImport() {
+    if (!sheetUrl.trim()) return
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const res = await fetch('/api/import/google-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheet_url: sheetUrl.trim() }),
+      })
+      const data = await res.json()
+      setImportResult(data)
+    } catch {
+      setImportResult({ success: false, error: 'Network error. Make sure the backend is running.' })
+    } finally {
+      setImporting(false)
+    }
   }
 
   return (
@@ -192,6 +216,72 @@ export default function RegisterPage() {
           </button>
 
         </form>
+      </div>
+      {/* ── Google Sheet Bulk Import ── */}
+      <div className="sr-card import-card">
+        <div className="sr-header">
+          <h1 className="sr-title">Bulk Import from Google Sheet</h1>
+          <p className="sr-sub">
+            Paste your Google Sheet URL to register everyone at once. The sheet must be shared as
+            <strong> "Anyone with the link can view"</strong>.
+          </p>
+        </div>
+
+        <div className="import-columns-hint">
+          Expected column headers (exact, case-insensitive):
+          <code>name &nbsp;|&nbsp; gmail &nbsp;|&nbsp; phone no &nbsp;|&nbsp; occupation &nbsp;|&nbsp; linkedin &nbsp;|&nbsp; photo &nbsp;|&nbsp; event name</code>
+          <br />
+          The <em>photo</em> column should contain a Google Drive sharing link or a direct image URL.
+        </div>
+
+        <div className="import-row">
+          <input
+            className="import-url-input"
+            placeholder="https://docs.google.com/spreadsheets/d/..."
+            value={sheetUrl}
+            onChange={e => setSheetUrl(e.target.value)}
+            disabled={importing}
+          />
+          <button
+            className="sr-submit import-btn"
+            onClick={handleImport}
+            disabled={importing || !sheetUrl.trim()}
+          >
+            {importing ? 'Importing...' : 'Import'}
+          </button>
+        </div>
+
+        {importing && (
+          <div className="import-progress">
+            Processing rows — downloading photos and generating face embeddings. This may take a minute...
+          </div>
+        )}
+
+        {importResult && (
+          <div className={`import-result ${importResult.success ? 'success' : 'error'}`}>
+            {!importResult.success ? (
+              <p>Error: {importResult.error}</p>
+            ) : (
+              <>
+                <p>
+                  <strong>✓ {importResult.imported} registered</strong>
+                  {importResult.skipped > 0 && <span> &nbsp;·&nbsp; ⚠ {importResult.skipped} skipped</span>}
+                </p>
+                {importResult.events_created?.length > 0 && (
+                  <p>Events created: {importResult.events_created.join(', ')}</p>
+                )}
+                {importResult.errors?.length > 0 && (
+                  <details className="import-errors">
+                    <summary>Show skipped ({importResult.errors.length})</summary>
+                    <ul>
+                      {importResult.errors.map((e, i) => <li key={i}>{e}</li>)}
+                    </ul>
+                  </details>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
