@@ -11,14 +11,14 @@ export default function App() {
           <NavLink to="/" end className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
             Attendance
           </NavLink>
-          <NavLink to="/register" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
-            Register
+          <NavLink to="/spotregister" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+            Spotregister
           </NavLink>
         </div>
       </nav>
       <Routes>
         <Route path="/" element={<AttendancePage />} />
-        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/spotregister" element={<RegisterPage />} />
       </Routes>
     </BrowserRouter>
   )

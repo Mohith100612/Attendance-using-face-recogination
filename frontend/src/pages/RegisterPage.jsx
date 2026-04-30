@@ -1,32 +1,21 @@
-import { useRef, useState, useEffect, useCallback } from 'react'
+import { useRef, useState } from 'react'
 import Webcam from 'react-webcam'
 
 export default function RegisterPage() {
   const webcamRef = useRef(null)
 
-  const [tab, setTab] = useState('upload') // 'upload' | 'camera'
-  const [name, setName] = useState('')
-  const [preview, setPreview] = useState(null) // base64 or object URL
+  const [form, setForm] = useState({ name: '', email: '', phone: '', linkedin: '', occupation: '' })
+  const [tab, setTab] = useState('upload')
+  const [preview, setPreview] = useState(null)
   const [uploadFile, setUploadFile] = useState(null)
-  const [captured, setCaptured] = useState(null) // base64 from webcam
+  const [captured, setCaptured] = useState(null)
   const [submitting, setSubmitting] = useState(false)
-  const [message, setMessage] = useState(null) // { type: 'success'|'error', text }
-  const [users, setUsers] = useState([])
-  const [loadingUsers, setLoadingUsers] = useState(true)
+  const [status, setStatus] = useState(null) // null | 'success' | 'error'
+  const [statusMsg, setStatusMsg] = useState('')
 
-  const fetchUsers = useCallback(async () => {
-    try {
-      const res = await fetch('/api/register/users')
-      const data = await res.json()
-      setUsers(data)
-    } catch {
-      // ignore
-    } finally {
-      setLoadingUsers(false)
-    }
-  }, [])
-
-  useEffect(() => { fetchUsers() }, [fetchUsers])
+  function handleField(e) {
+    setForm(f => ({ ...f, [e.target.name]: e.target.value }))
+  }
 
   function handleFileChange(e) {
     const file = e.target.files[0]
@@ -37,186 +26,172 @@ export default function RegisterPage() {
   }
 
   function handleCapture() {
-    if (!webcamRef.current) return
-    const imageSrc = webcamRef.current.getScreenshot()
-    setCaptured(imageSrc)
-    setPreview(imageSrc)
+    const img = webcamRef.current?.getScreenshot()
+    if (!img) return
+    setCaptured(img)
+    setPreview(img)
     setUploadFile(null)
   }
 
-  function handleRetake() {
-    setCaptured(null)
-    setPreview(null)
-  }
-
-  function switchTab(newTab) {
-    setTab(newTab)
+  function switchTab(t) {
+    setTab(t)
     setPreview(null)
     setUploadFile(null)
     setCaptured(null)
-    setMessage(null)
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!name.trim()) return setMessage({ type: 'error', text: 'Please enter a name.' })
-    if (!uploadFile && !captured) return setMessage({ type: 'error', text: 'Please provide a photo.' })
+    if (!form.name.trim()) return showStatus('error', 'Full name is required.')
+    if (!form.email.trim()) return showStatus('error', 'Email is required.')
+    if (!uploadFile && !captured) return showStatus('error', 'Please provide a face photo.')
 
     setSubmitting(true)
-    setMessage(null)
+    setStatus(null)
+
+    const fd = new FormData()
+    Object.entries(form).forEach(([k, v]) => fd.append(k, v.trim()))
+    if (uploadFile) fd.append('image', uploadFile)
+    else fd.append('image_base64', captured)
 
     try {
-      const formData = new FormData()
-      formData.append('name', name.trim())
-
-      if (uploadFile) {
-        formData.append('image', uploadFile)
-      } else {
-        formData.append('image_base64', captured)
-      }
-
-      const res = await fetch('/api/register', { method: 'POST', body: formData })
+      const res = await fetch('/api/register', { method: 'POST', body: fd })
       const data = await res.json()
-
       if (!res.ok) {
-        setMessage({ type: 'error', text: data.detail || 'Registration failed.' })
+        showStatus('error', data.detail || 'Registration failed.')
       } else {
-        setMessage({ type: 'success', text: `${data.name} registered successfully!` })
-        setName('')
+        showStatus('success', `${data.name} has been registered successfully!`)
+        setForm({ name: '', email: '', phone: '', linkedin: '', occupation: '' })
         setPreview(null)
         setUploadFile(null)
         setCaptured(null)
-        fetchUsers()
       }
     } catch {
-      setMessage({ type: 'error', text: 'Network error. Is the backend running?' })
+      showStatus('error', 'Network error. Make sure the backend is running.')
     } finally {
       setSubmitting(false)
     }
   }
 
-  async function handleDelete(userId, userName) {
-    if (!window.confirm(`Remove ${userName} from the system? This will also delete all their attendance records.`)) return
-    const res = await fetch(`/api/register/users/${userId}`, { method: 'DELETE' })
-    if (res.ok) {
-      fetchUsers()
-    } else {
-      const data = await res.json().catch(() => ({}))
-      alert(`Failed to delete: ${data.detail || 'Unknown error'}`)
-    }
+  function showStatus(type, msg) {
+    setStatus(type)
+    setStatusMsg(msg)
   }
 
   return (
-    <div className="register-page">
-      <div className="register-left">
-        <h1 className="page-title">Register Attendee</h1>
+    <div className="sr-page">
+      <div className="sr-card">
 
-        <form onSubmit={handleSubmit} className="register-form">
-          <label className="field-label">Full Name</label>
-          <input
-            type="text"
-            className="text-input"
-            placeholder="e.g. Sivateja Sripadaa"
-            value={name}
-            onChange={e => setName(e.target.value)}
-            disabled={submitting}
-          />
+        <div className="sr-header">
+          <h1 className="sr-title">Spotregister</h1>
+          <p className="sr-sub">Fill in the details and capture your face to register for the event.</p>
+        </div>
 
-          <label className="field-label">Photo</label>
-          <div className="tabs">
-            <button type="button" className={`tab-btn ${tab === 'upload' ? 'active' : ''}`} onClick={() => switchTab('upload')}>
-              Upload Photo
-            </button>
-            <button type="button" className={`tab-btn ${tab === 'camera' ? 'active' : ''}`} onClick={() => switchTab('camera')}>
-              Use Camera
-            </button>
+        <form onSubmit={handleSubmit} className="sr-form">
+
+          {/* Row 1: Name + Email */}
+          <div className="sr-row">
+            <div className="sr-field">
+              <label>Full Name <span className="req">*</span></label>
+              <input name="name" placeholder="John Doe" value={form.name}
+                onChange={handleField} disabled={submitting} />
+            </div>
+            <div className="sr-field">
+              <label>Email Address <span className="req">*</span></label>
+              <input name="email" type="email" placeholder="john@example.com" value={form.email}
+                onChange={handleField} disabled={submitting} />
+            </div>
           </div>
 
-          {tab === 'upload' && (
-            <div className="upload-area">
-              <input
-                type="file"
-                accept="image/*"
-                id="file-input"
-                className="hidden-input"
-                onChange={handleFileChange}
-                disabled={submitting}
-              />
-              {!preview ? (
-                <label htmlFor="file-input" className="upload-placeholder">
-                  <span className="upload-icon">+</span>
-                  <span>Click to choose a photo</span>
-                </label>
-              ) : (
-                <div className="preview-wrapper">
-                  <img src={preview} alt="Preview" className="photo-preview" />
-                  <label htmlFor="file-input" className="change-btn">Change Photo</label>
-                </div>
-              )}
+          {/* Row 2: Phone + Occupation */}
+          <div className="sr-row">
+            <div className="sr-field">
+              <label>Phone Number</label>
+              <input name="phone" placeholder="+91 98765 43210" value={form.phone}
+                onChange={handleField} disabled={submitting} />
             </div>
-          )}
+            <div className="sr-field">
+              <label>Occupation</label>
+              <input name="occupation" placeholder="Software Engineer" value={form.occupation}
+                onChange={handleField} disabled={submitting} />
+            </div>
+          </div>
 
-          {tab === 'camera' && (
-            <div className="camera-capture-area">
-              {!captured ? (
+          {/* LinkedIn full width */}
+          <div className="sr-field">
+            <label>LinkedIn Profile URL</label>
+            <input name="linkedin" placeholder="https://linkedin.com/in/yourprofile"
+              value={form.linkedin} onChange={handleField} disabled={submitting} />
+          </div>
+
+          {/* Face photo */}
+          <div className="sr-photo-section">
+            <label>Face Photo <span className="req">*</span></label>
+            <div className="sr-tabs">
+              <button type="button" className={tab === 'upload' ? 'active' : ''} onClick={() => switchTab('upload')}>
+                Upload Photo
+              </button>
+              <button type="button" className={tab === 'camera' ? 'active' : ''} onClick={() => switchTab('camera')}>
+                Use Camera
+              </button>
+            </div>
+
+            <div className="sr-photo-area">
+              {tab === 'upload' && (
                 <>
-                  <Webcam
-                    ref={webcamRef}
-                    audio={false}
-                    screenshotFormat="image/jpeg"
-                    screenshotQuality={0.9}
-                    videoConstraints={{ width: 480, height: 360, facingMode: 'user' }}
-                    className="register-webcam"
-                  />
-                  <button type="button" className="btn-capture" onClick={handleCapture}>
-                    Capture Photo
-                  </button>
+                  <input type="file" accept="image/*" id="sr-file" className="sr-hidden"
+                    onChange={handleFileChange} disabled={submitting} />
+                  {!preview ? (
+                    <label htmlFor="sr-file" className="sr-drop">
+                      <div className="sr-drop-icon">+</div>
+                      <span>Click to upload a photo</span>
+                      <span className="sr-drop-hint">JPG, PNG — clear front-facing face</span>
+                    </label>
+                  ) : (
+                    <div className="sr-preview-wrap">
+                      <img src={preview} alt="preview" className="sr-preview" />
+                      <label htmlFor="sr-file" className="sr-retake">Change Photo</label>
+                    </div>
+                  )}
                 </>
-              ) : (
-                <div className="preview-wrapper">
-                  <img src={preview} alt="Captured" className="photo-preview" />
-                  <button type="button" className="change-btn" onClick={handleRetake}>
-                    Retake
-                  </button>
-                </div>
+              )}
+
+              {tab === 'camera' && (
+                <>
+                  {!captured ? (
+                    <div className="sr-cam-wrap">
+                      <Webcam ref={webcamRef} audio={false} screenshotFormat="image/jpeg"
+                        screenshotQuality={0.9}
+                        videoConstraints={{ width: 400, height: 300, facingMode: 'user' }}
+                        className="sr-cam" />
+                      <button type="button" className="sr-capture-btn" onClick={handleCapture}>
+                        Capture
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="sr-preview-wrap">
+                      <img src={preview} alt="captured" className="sr-preview" />
+                      <button type="button" className="sr-retake"
+                        onClick={() => { setCaptured(null); setPreview(null) }}>
+                        Retake
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
+          </div>
+
+          {/* Status message */}
+          {status && (
+            <div className={`sr-status ${status}`}>{statusMsg}</div>
           )}
 
-          {message && (
-            <div className={`message ${message.type}`}>{message.text}</div>
-          )}
-
-          <button type="submit" className="btn-submit" disabled={submitting}>
+          <button type="submit" className="sr-submit" disabled={submitting}>
             {submitting ? 'Registering...' : 'Register'}
           </button>
-        </form>
-      </div>
 
-      <div className="register-right">
-        <h2 className="section-title">Registered Users ({users.length})</h2>
-        {loadingUsers ? (
-          <p className="muted">Loading...</p>
-        ) : users.length === 0 ? (
-          <p className="muted">No users registered yet.</p>
-        ) : (
-          <div className="users-list">
-            {users.map(u => (
-              <div key={u.id} className="user-card">
-                {u.image_url ? (
-                  <img src={u.image_url} alt={u.name} className="user-thumb" />
-                ) : (
-                  <div className="user-thumb-placeholder">?</div>
-                )}
-                <div className="user-info">
-                  <div className="user-name">{u.name}</div>
-                  <div className="user-date">{new Date(u.registered_at).toLocaleDateString()}</div>
-                </div>
-                <button className="btn-delete" onClick={() => handleDelete(u.id, u.name)}>✕</button>
-              </div>
-            ))}
-          </div>
-        )}
+        </form>
       </div>
     </div>
   )

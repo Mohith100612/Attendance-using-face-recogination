@@ -9,8 +9,12 @@ class User(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(255), nullable=False)
+    email = Column(String(255))
+    phone = Column(String(50))
+    linkedin = Column(String(255))
+    occupation = Column(String(255))
     image_url = Column(String)
-    embedding = Column(Vector(128))  # Facenet produces 128-dim embeddings
+    embedding = Column(Vector(128))
     registered_at = Column(DateTime, default=datetime.utcnow)
 
 
