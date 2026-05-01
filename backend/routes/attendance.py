@@ -175,6 +175,40 @@ def detect_face(request: DetectRequest, db: Session = Depends(get_db)):
         return {"status": "error"}
 
 
+@router.get("/present")
+def present_attendees(event_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Full profiles of everyone who has checked in (status=present) for an event."""
+    query = """
+        SELECT u.id, u.name, u.email, u.phone, u.linkedin, u.occupation,
+               u.image_url, a.timestamp, e.name AS event_name
+        FROM attendance a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN events e ON e.id = a.event_id
+        WHERE a.status = 'present'
+    """
+    params = {}
+    if event_id is not None:
+        query += " AND a.event_id = :eid"
+        params["eid"] = event_id
+    query += " ORDER BY a.timestamp DESC"
+
+    rows = db.execute(text(query), params).fetchall()
+    return [
+        {
+            "id": r.id,
+            "name": r.name,
+            "email": r.email,
+            "phone": r.phone,
+            "linkedin": r.linkedin,
+            "occupation": r.occupation,
+            "image_url": r.image_url,
+            "checked_in_at": r.timestamp,
+            "event_name": r.event_name,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/logs")
 def attendance_logs(event_id: Optional[int] = None, db: Session = Depends(get_db)):
     if event_id is not None:
