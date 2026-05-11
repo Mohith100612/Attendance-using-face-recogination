@@ -52,11 +52,12 @@ function unlockAudioContext() {
   } catch (_) {}
 }
 
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent)
+
 function speak(text) {
   try {
     window.speechSynthesis.cancel()
-    // iOS needs a tiny delay after cancel() before a new utterance works
-    setTimeout(() => {
+    const doSpeak = () => {
       const u = new SpeechSynthesisUtterance(text)
       const voice = getFemaleVoice()
       if (voice) u.voice = voice
@@ -64,7 +65,10 @@ function speak(text) {
       u.rate = 0.92
       u.volume = 1.0
       window.speechSynthesis.speak(u)
-    }, 50)
+    }
+    // iOS needs a small gap after cancel(); Android speaks immediately
+    if (isIOS) setTimeout(doSpeak, 80)
+    else doSpeak()
   } catch (_) {}
 }
 
@@ -111,6 +115,7 @@ export default function MobileScanPage() {
   // iOS Safari stops speech synthesis after ~30s of inactivity.
   // Keep it alive by pausing/resuming every 10s while scanning.
   function startKeepalive() {
+    if (!isIOS) return // Android doesn't need this; it can interrupt ongoing speech
     if (keepaliveRef.current) clearInterval(keepaliveRef.current)
     keepaliveRef.current = setInterval(() => {
       if (!window.speechSynthesis.speaking) {
